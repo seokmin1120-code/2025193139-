@@ -1,0 +1,340 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+
+#define REPETITIONS 3
+#define RANDOM_LIMIT 100000
+#define RANDOM_SEED 20260930u
+
+typedef struct {
+    uint64_t comparisons;
+    uint64_t moves;
+} SortStats;
+
+typedef void (*SortFunction)(int *arr, size_t n, SortStats *stats);
+
+typedef struct {
+    const char *name;
+    SortFunction sort;
+} SortAlgorithm;
+
+typedef enum {
+    RANDOM_DATA,
+    SORTED_DATA,
+    REVERSE_DATA
+} InputType;
+
+static void insertionSort(int *arr, size_t n, SortStats *stats) {
+    for (size_t i = 1; i < n; i++) {
+        int key = arr[i];
+        size_t j = i;
+        stats->moves++;
+
+        while (j > 0) {
+            stats->comparisons++;
+            if (arr[j - 1] <= key) {
+                break;
+            }
+            arr[j] = arr[j - 1];
+            stats->moves++;
+            j--;
+        }
+
+        arr[j] = key;
+        stats->moves++;
+    }
+}
+
+static void swapInt(int *a, int *b, SortStats *stats) {
+    if (a == b) {
+        return;
+    }
+    int temp = *a;
+    *a = *b;
+    *b = temp;
+    stats->moves += 3;
+}
+
+static int compareValue(int a, int b, SortStats *stats) {
+    stats->comparisons++;
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+}
+
+static void quickSortRange(int *arr, long left, long right, SortStats *stats) {
+    if (left >= right) {
+        return;
+    }
+
+    long i = left;
+    long j = right;
+    int pivot = arr[left + (right - left) / 2];
+
+    while (i <= j) {
+        while (compareValue(arr[i], pivot, stats) < 0) {
+            i++;
+        }
+        while (compareValue(arr[j], pivot, stats) > 0) {
+            j--;
+        }
+        if (i <= j) {
+            swapInt(&arr[i], &arr[j], stats);
+            i++;
+            j--;
+        }
+    }
+
+    if (left < j) quickSortRange(arr, left, j, stats);
+    if (i < right) quickSortRange(arr, i, right, stats);
+}
+
+static void quickSort(int *arr, size_t n, SortStats *stats) {
+    if (n < 2) {
+        return;
+    }
+    quickSortRange(arr, 0, (long)n - 1, stats);
+}
+
+static int isGreater(int a, int b, SortStats *stats) {
+    stats->comparisons++;
+    return a > b;
+}
+
+static void heapify(int *arr, size_t n, size_t root, SortStats *stats) {
+    while (1) {
+        size_t largest = root;
+        size_t left = 2 * root + 1;
+        size_t right = 2 * root + 2;
+
+        if (left < n && isGreater(arr[left], arr[largest], stats)) {
+            largest = left;
+        }
+        if (right < n && isGreater(arr[right], arr[largest], stats)) {
+            largest = right;
+        }
+        if (largest == root) {
+            break;
+        }
+
+        swapInt(&arr[root], &arr[largest], stats);
+        root = largest;
+    }
+}
+
+static void heapSort(int *arr, size_t n, SortStats *stats) {
+    if (n < 2) {
+        return;
+    }
+
+    for (size_t i = n / 2; i > 0; i--) {
+        heapify(arr, n, i - 1, stats);
+    }
+
+    for (size_t end = n; end > 1; end--) {
+        swapInt(&arr[0], &arr[end - 1], stats);
+        heapify(arr, end - 1, 0, stats);
+    }
+}
+
+static uint32_t nextRandom(uint32_t *state) {
+    uint32_t x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
+
+static const char *inputName(InputType type) {
+    switch (type) {
+        case RANDOM_DATA: return "random";
+        case SORTED_DATA: return "sorted";
+        case REVERSE_DATA: return "reverse";
+        default: return "unknown";
+    }
+}
+
+static void makeInput(int *arr, size_t n, InputType type, uint32_t seed) {
+    if (type == RANDOM_DATA) {
+        uint32_t state = seed;
+        for (size_t i = 0; i < n; i++) {
+            arr[i] = (int)(nextRandom(&state) % RANDOM_LIMIT);
+        }
+        return;
+    }
+
+    if (type == SORTED_DATA) {
+        for (size_t i = 0; i < n; i++) {
+            arr[i] = (int)i;
+        }
+        return;
+    }
+
+    for (size_t i = 0; i < n; i++) {
+        arr[i] = (int)(n - i);
+    }
+}
+
+static int isSorted(const int *arr, size_t n) {
+    for (size_t i = 1; i < n; i++) {
+        if (arr[i - 1] > arr[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static double benchmark(const SortAlgorithm *algorithm,
+                        const int *input,
+                        size_t n,
+                        SortStats *stats_out) {
+    int *working = malloc(n * sizeof(int));
+    if (working == NULL) {
+        fprintf(stderr, "memory allocation failed\n");
+        exit(EXIT_FAILURE);
+    }
+
+    double total_ms = 0.0;
+    SortStats measured = {0, 0};
+
+    for (int r = 0; r < REPETITIONS; r++) {
+        memcpy(working, input, n * sizeof(int));
+        SortStats stats = {0, 0};
+
+        clock_t start = clock();
+        algorithm->sort(working, n, &stats);
+        clock_t end = clock();
+
+        if (!isSorted(working, n)) {
+            fprintf(stderr, "%s failed to sort n=%zu\n", algorithm->name, n);
+            free(working);
+            exit(EXIT_FAILURE);
+        }
+
+        total_ms += 1000.0 * (double)(end - start) / (double)CLOCKS_PER_SEC;
+        if (r == 0) {
+            measured = stats;
+        }
+    }
+
+    free(working);
+    *stats_out = measured;
+    return total_ms / REPETITIONS;
+}
+
+static int runCorrectnessTests(void) {
+    const int test_cases[][10] = {
+        {5, 2, 8, 1, 3, 7, 4, 6, 0, 9},
+        {0, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+        {9, 8, 7, 6, 5, 4, 3, 2, 1, 0},
+        {4, 2, 4, 1, 2, 4, 3, 3, 1, 2},
+        {-3, 7, 0, -1, 7, -3, 2, 5, 2, 0}
+    };
+
+    const SortAlgorithm algorithms[] = {
+        {"Insertion", insertionSort},
+        {"Quick", quickSort},
+        {"Heap", heapSort}
+    };
+
+    const size_t test_count = sizeof(test_cases) / sizeof(test_cases[0]);
+    const size_t algorithm_count = sizeof(algorithms) / sizeof(algorithms[0]);
+
+    for (size_t a = 0; a < algorithm_count; a++) {
+        for (size_t t = 0; t < test_count; t++) {
+            int arr[10];
+            SortStats stats = {0, 0};
+            memcpy(arr, test_cases[t], sizeof(arr));
+            algorithms[a].sort(arr, 10, &stats);
+            if (!isSorted(arr, 10)) {
+                printf("FAIL %s - case %zu\n", algorithms[a].name, t + 1);
+                return 0;
+            }
+        }
+        printf("PASS %s Sort\n", algorithms[a].name);
+    }
+    return 1;
+}
+
+int main(int argc, char **argv) {
+    const SortAlgorithm algorithms[] = {
+        {"Insertion", insertionSort},
+        {"Quick", quickSort},
+        {"Heap", heapSort}
+    };
+    const size_t sizes[] = {1000, 3000, 5000, 10000, 20000};
+    const InputType input_types[] = {RANDOM_DATA, SORTED_DATA, REVERSE_DATA};
+
+    const size_t algorithm_count = sizeof(algorithms) / sizeof(algorithms[0]);
+    const size_t size_count = sizeof(sizes) / sizeof(sizes[0]);
+    const size_t input_count = sizeof(input_types) / sizeof(input_types[0]);
+
+    int csv_mode = (argc > 1 && strcmp(argv[1], "--csv") == 0);
+    int test_mode = (argc > 1 && strcmp(argv[1], "--test") == 0);
+
+    if (test_mode) {
+        return runCorrectnessTests() ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    if (csv_mode) {
+        printf("input,n,algorithm,time_ms,comparisons,moves\n");
+    } else {
+        printf("Sorting comparison: Insertion / Quick / Heap\n");
+        printf("Time is the average of %d runs.\n\n", REPETITIONS);
+    }
+
+    for (size_t t = 0; t < input_count; t++) {
+        InputType type = input_types[t];
+
+        if (!csv_mode) {
+            printf("[%s]\n", inputName(type));
+            printf("%-8s %-10s %12s %15s %15s\n",
+                   "n", "algorithm", "time(ms)", "comparisons", "moves");
+            printf("-------------------------------------------------------------------\n");
+        }
+
+        for (size_t s = 0; s < size_count; s++) {
+            size_t n = sizes[s];
+            int *input = malloc(n * sizeof(int));
+            if (input == NULL) {
+                fprintf(stderr, "memory allocation failed\n");
+                return EXIT_FAILURE;
+            }
+
+            makeInput(input, n, type, RANDOM_SEED + (uint32_t)n);
+
+            for (size_t a = 0; a < algorithm_count; a++) {
+                SortStats stats = {0, 0};
+                double time_ms = benchmark(&algorithms[a], input, n, &stats);
+
+                if (csv_mode) {
+                    printf("%s,%zu,%s,%.6f,%llu,%llu\n",
+                           inputName(type),
+                           n,
+                           algorithms[a].name,
+                           time_ms,
+                           (unsigned long long)stats.comparisons,
+                           (unsigned long long)stats.moves);
+                } else {
+                    printf("%-8zu %-10s %12.3f %15llu %15llu\n",
+                           n,
+                           algorithms[a].name,
+                           time_ms,
+                           (unsigned long long)stats.comparisons,
+                           (unsigned long long)stats.moves);
+                }
+            }
+
+            free(input);
+        }
+
+        if (!csv_mode) {
+            printf("\n");
+        }
+    }
+
+    return EXIT_SUCCESS;
+}
